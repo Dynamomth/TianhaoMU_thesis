@@ -392,75 +392,120 @@ if __name__ == '__main__':
         print("\nWorkflow successfully completed!")
         print(f"Final output saved at: {final_fp}")
 
-# week 15-1 (manure application-cattle->dairy cow & bovine)
-import geopandas as gpd
+# week 15-1 (manure application-cattle->standardization by Eurostat)
 import rasterio
-from rasterio.mask import mask
+import geopandas as gpd
 import pandas as pd
 import numpy as np
+from rasterio.features import rasterize
 import os
-from tqdm import tqdm
 
-# Input dataset
-raster_path = r'D:\ManureAppThesis\AnimalDistribution\cattle\Glb_Cattle_CC2006_AD.tif'  # Input total cattle density raster
-shapefile_path = r'D:\ManureAppThesis\01M_NUTS0_WSG84_4326\NUTS_RG_01M_2021_4326_LEVL_0.shp'  # Contains geo_code field
-stats_path = r'D:\ManureAppThesis\AnimalDistribution\Comparison_GLIMS\DairyCow&Bovine_csv.csv'  # Contains geo_code, ratio_DairyCow/Bovine, etc.
+# === Input paths ===
+cattle_raster_path = r'D:\ManureAppThesis\AnimalDistribution\cattle\Glb_Cattle_CC2006_AD.tif'
+nuts0_shp_path = r'D:\ManureAppThesis\01M_NUTS0_WSG84_4326\NUTS_RG_01M_2021_4326_LEVL_0.shp'
+standardization_csv = r'D:\ManureAppThesis\AnimalDistribution\Comparison_GLIMS\DairyCow&Bovine_csv.csv'
+output_path = r'D:\ManureAppThesis\standardized_cattle_1km.tif'
 
-# === Output directory ===
-output_dir = r'D:\ManureAppThesis\AnimalDistribution\Comparison_GLIMS'
-os.makedirs(output_dir, exist_ok=True)
+# === Read original cattle distribution raster ===
+with rasterio.open(cattle_raster_path) as src:
+    cow_data = src.read(1)
+    cow_meta = src.meta.copy()
+    transform = src.transform
+    raster_shape = src.shape
+    raster_crs = src.crs
 
-# === Load data ===
-print("Loading vector boundaries and statistical data...")
-gdf = gpd.read_file(shapefile_path)
-stats = pd.read_csv(stats_path).set_index("NUTS_ID")
+# === Read NUTS0 boundaries and reproject to match raster CRS ===
+nuts = gpd.read_file(nuts0_shp_path)
+nuts = nuts.to_crs(raster_crs)
 
-# Create two output arrays
-with rasterio.open(raster_path) as src:
+# === Read CSV and merge attributes ===
+factors = pd.read_csv(standardization_csv)
+nuts = nuts.merge(factors, on='NUTS_ID', how='left')
+
+# === Rasterize scale factor (assigned by country) ===
+scale_factor_raster = rasterize(
+    [(row.geometry, row['scalefactor_Cattle']) for idx, row in nuts.iterrows()],
+    out_shape=raster_shape,
+    transform=transform,
+    fill=1.0,
+    dtype='float32'
+)
+
+# === Rasterize NUTS0 mask ===
+nuts_mask_raster = rasterize(
+    [(geom, 1) for geom in nuts.geometry],
+    out_shape=raster_shape,
+    transform=transform,
+    fill=0,
+    dtype='uint8'
+)
+
+# === Calculate adjusted cattle raster ===
+adjusted_cattle = cow_data.astype('float32') * scale_factor_raster
+
+# === Mask out non-NUTS areas (set areas outside region to 0) ===
+adjusted_cattle[nuts_mask_raster == 0] = 0
+
+# === Replace abnormal values ===
+adjusted_cattle = np.nan_to_num(adjusted_cattle, nan=0.0, posinf=0.0, neginf=0.0)
+
+# === Update metadata and write output ===
+cow_meta.update({
+    'dtype': 'float32',
+    'compress': 'lzw'
+})
+
+with rasterio.open(output_path, 'w', **cow_meta) as dst:
+    dst.write(adjusted_cattle, 1)
+
+print("✅ Successfully generated the calibrated cattle distribution map for Europe only:", output_path)
+
+# week 15-2 calculation of manure production
+import rasterio
+import geopandas as gpd
+import pandas as pd
+import numpy as np
+from rasterio.features import rasterize
+
+# === Input paths ===
+calibrated_cattle_raster = r'D:\ManureAppThesis\standardized_cattle_1km.tif'  # Calibrated cattle distribution raster
+nuts0_shp_path = r'D:\ManureAppThesis\01M_NUTS0_WSG84_4326\NUTS_RG_01M_2021_4326_LEVL_0.shp'
+standardization_csv = r'D:\ManureAppThesis\AnimalDistribution\Comparison_GLIMS\DairyCow&Bovine_csv.csv'  # Contains excretion_rate
+output_manure_path = r'D:\ManureAppThesis\manure_production_1km.tif'
+
+# === Read the calibrated cattle distribution raster ===
+with rasterio.open(calibrated_cattle_raster) as src:
+    cattle_data = src.read(1)
     meta = src.meta.copy()
-    full_shape = (src.height, src.width)
-    dairy_array = np.zeros(full_shape, dtype=np.float32)
-    beef_array = np.zeros(full_shape, dtype=np.float32)
+    transform = src.transform
+    shape = src.shape
+    crs = src.crs
 
-    for code in tqdm(stats.index, desc="Processing each country"):
-        if code not in gdf["NUTS_ID"].values:
-            print(f"⚠️ Country code {code} not found in shapefile, skipping")
-            continue
+# === Read NUTS0 boundaries and align projection ===
+nuts = gpd.read_file(nuts0_shp_path)
+nuts = nuts.to_crs(crs)
 
-        # Get country ratio
-        try:
-            dairy_ratio = stats.loc[code, "ratio_DairyCow/Bovine"]
-        except:
-            print(f"⚠️ Missing dairy ratio data for {code}, skipping")
-            continue
-        beef_ratio = 1 - dairy_ratio
+# === Read CSV and merge attributes ===
+factors = pd.read_csv(standardization_csv)
+nuts = nuts.merge(factors, on='NUTS_ID', how='left')
 
-        # Get country boundary
-        geom = gdf[gdf["NUTS_ID"] == code]
+# === Rasterize excretion rates ===
+excretion_rate_raster = rasterize(
+    [(row.geometry, row['excretion_cattle(total)']) for idx, row in nuts.iterrows()],
+    out_shape=shape,
+    transform=transform,
+    fill=0.0,
+    dtype='float32'
+)
 
-        try:
-            masked_data, transform = mask(src, geom.geometry, crop=False)
-        except Exception as e:
-            print(f"❌ Failed to mask {code}: {e}")
-            continue
+# === Calculate manure production ===
+manure_production = cattle_data.astype('float32') * excretion_rate_raster
+manure_production = np.nan_to_num(manure_production, nan=0.0, posinf=0.0, neginf=0.0)
 
-        cow_data = masked_data[0]
-        cow_data[cow_data < 0] = 0  # Remove nodata or negative values
+# === Write the result ===
+meta.update(dtype='float32', compress='lzw')
 
-        # Split dairy and beef cattle
-        dairy_array += cow_data * dairy_ratio
-        beef_array += cow_data * beef_ratio
+with rasterio.open(output_manure_path, 'w', **meta) as dst:
+    dst.write(manure_production, 1)
 
-# === Write outputs ===
-meta.update({"dtype": "float32", "count": 1})
-
-dairy_path = os.path.join(output_dir, "DairyCow_1km.tif")
-beef_path = os.path.join(output_dir, "Bovine_1km.tif")
-
-with rasterio.open(dairy_path, "w", **meta) as dst:
-    dst.write(dairy_array, 1)
-
-with rasterio.open(beef_path, "w", **meta) as dst:
-    dst.write(beef_array, 1)
-
-print("Dairy and beef cattle maps have been generated successfully!")
+print("✅ Manure production raster calculation completed and saved to:", output_manure_path)
