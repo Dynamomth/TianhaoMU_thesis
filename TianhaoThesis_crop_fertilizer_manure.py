@@ -2027,7 +2027,7 @@ import os
 
 
 def load_manure_fractions_from_excel(excel_path):
-    print(f"--- 步骤 1/4: 正在从Excel文件加载参数: {excel_path}... ---")
+    print(f"--- Step 1/4: Loading parameters from Excel file: {excel_path}... ---")
     df = pd.read_excel(excel_path)
     df = df.rename(columns={
         'AvaliableforApplicationLiquid_Fraction_inTotalManure': 'Frac_Liquid_Available',
@@ -2039,22 +2039,22 @@ def load_manure_fractions_from_excel(excel_path):
     })
     df = df.set_index('NUTS_ID')
 
-    # 标准化索引：去空格 + 大写
+    # Standardize index: remove spaces + uppercase
     df.index = df.index.str.strip().str.upper()
 
-    # 修复常见国家代码差异
+    # Fix common country code differences
     code_map = {
-        'GR': 'EL',  # 希腊
-        'GB': 'UK'   # 英国
+        'GR': 'EL',  # Greece
+        'GB': 'UK'   # United Kingdom
     }
     df.rename(index=code_map, inplace=True)
 
-    print("参数加载成功。\n")
+    print("Parameters loaded successfully.\n")
     return df
 
 
 def reclassify_land_use(corine_raster_path, classification_dict, output_path):
-    print(f"--- 步骤 2/4: 正在重新分类土地利用数据: {corine_raster_path}... ---")
+    print(f"--- Step 2/4: Reclassifying land use data: {corine_raster_path}... ---")
     with rasterio.open(corine_raster_path) as src:
         corine_data = src.read(1)
         profile = src.profile
@@ -2062,10 +2062,10 @@ def reclassify_land_use(corine_raster_path, classification_dict, output_path):
         for pixel_value, land_class in classification_dict.items():
             reclassified_data[corine_data == pixel_value] = land_class
         profile.update(dtype=rasterio.uint8, count=1, nodata=0)
-        print(f"正在将分类后的数据写入: {output_path}...")
+        print(f"Writing reclassified data to: {output_path}...")
         with rasterio.open(output_path, 'w', **profile) as dst:
             dst.write(reclassified_data, 1)
-    print("土地利用分类完成。\n")
+    print("Land use reclassification completed.\n")
     return output_path
 
 
@@ -2076,7 +2076,7 @@ def calculate_manure_application(
         manure_fractions_df,
         output_path
 ):
-    print("--- 步骤 3/4: 正在加载数据并自动对齐栅格... ---")
+    print("--- Step 3/4: Loading and aligning raster data... ---")
 
     with rasterio.open(reclassified_land_use_path) as land_use_src:
         land_use_data = land_use_src.read(1)
@@ -2085,10 +2085,10 @@ def calculate_manure_application(
         with rasterio.open(swine_manure_production_path) as manure_prod_src:
             if (manure_prod_src.shape == land_use_src.shape and
                     manure_prod_src.transform == land_use_src.transform):
-                print("栅格已对齐，无需重采样。")
+                print("Rasters are aligned. No resampling needed.")
                 manure_prod_data = manure_prod_src.read(1)
             else:
-                print("栅格未对齐，正在执行自动重采样...")
+                print("Rasters are not aligned. Performing automatic resampling...")
                 with MemoryFile() as memfile:
                     with memfile.open(**dst_profile) as dst:
                         reproject(
@@ -2101,28 +2101,28 @@ def calculate_manure_application(
                             resampling=Resampling.bilinear
                         )
                         manure_prod_data = dst.read(1)
-                print("自动重采样完成。")
+                print("Automatic resampling completed.")
 
-    print("栅格对齐步骤完成。\n")
-    print("--- 步骤 4/4: 开始计算猪粪施用量... ---")
+    print("Raster alignment step completed.\n")
+    print("--- Step 4/4: Calculating swine manure application... ---")
 
-    print("正在加载NUTS0边界并进行栅格化...")
+    print("Loading NUTS0 boundaries and rasterizing...")
     nuts0_gdf = gpd.read_file(nuts0_shapefile_path)
     nuts0_gdf = nuts0_gdf.to_crs(dst_profile['crs'])
     nuts0_gdf['CNTR_CODE'] = nuts0_gdf['CNTR_CODE'].str.strip().str.upper()
     nuts0_gdf['country_id'] = range(1, len(nuts0_gdf) + 1)
     country_id_map = dict(zip(nuts0_gdf['CNTR_CODE'], nuts0_gdf['country_id']))
 
-    # 打印匹配情况
-    print("\n✔ Excel 国家代码:")
+    # Print matching info
+    print("\n✔ Excel country codes:")
     print(sorted(manure_fractions_df.index.tolist()))
-    print("\n✔ Shapefile 国家代码:")
+    print("\n✔ Shapefile country codes:")
     print(sorted(nuts0_gdf['CNTR_CODE'].unique().tolist()))
 
     matched = [c for c in country_id_map if c in manure_fractions_df.index]
     unmatched = [c for c in country_id_map if c not in manure_fractions_df.index]
-    print(f"\n✅ 成功匹配国家: {matched}")
-    print(f"⚠️ 未匹配国家（将被跳过）: {unmatched}")
+    print(f"\n✅ Successfully matched countries: {matched}")
+    print(f"⚠️ Unmatched countries (will be skipped): {unmatched}")
 
     country_raster = features.rasterize(
         shapes=[(geom, value) for geom, value in zip(nuts0_gdf.geometry, nuts0_gdf['country_id'])],
@@ -2133,7 +2133,7 @@ def calculate_manure_application(
         dtype=np.uint16
     )
 
-    print("开始逐个国家进行计算...")
+    print("Starting calculation for each country...")
     manure_application_data = np.zeros(land_use_data.shape, dtype=np.float32)
     for nuts_id, country_id in country_id_map.items():
         if nuts_id not in manure_fractions_df.index:
@@ -2155,28 +2155,28 @@ def calculate_manure_application(
 
     profile = dst_profile
     profile.update(dtype=rasterio.float32, count=1, nodata=0.0)
-    print(f"计算完成，正在将最终地图保存至 {output_path}...\n")
+    print(f"Calculation complete. Saving final map to {output_path}...\n")
     with rasterio.open(output_path, 'w', **profile) as dst:
         dst.write(manure_application_data, 1)
 
 
 if __name__ == '__main__':
-    # --- 1. 定义文件路径 ---
+    # --- 1. Define file paths ---
     FRACTION_EXCEL_PATH = r'D:\ManureAppThesis\MnanureApplication_INTEGRATOR\Fractions\Fraction_swine.xlsx'
     INPUT_CORINE_TIF = r'D:\ManureAppThesis\ManureApplication\CORINE_LandUseRaster1km\COEINERaster1km_withLegend.tif'
     INPUT_NUTS0_SHP = r'D:\ManureAppThesis\01M_NUTS0_WSG84_4326\NUTS_RG_01M_2021_4326_LEVL_0.shp'
     INPUT_SWINE_MANURE_TIF = r'D:\ManureAppThesis\ManureProduction\ManureProduction_tif\swine_manure_production_1km.tif'
     OUTPUT_DIR = r'D:\ManureAppThesis\MnanureApplication_INTEGRATOR'
 
-    # --- 2. 定义输出文件名 ---
+    # --- 2. Define output file names ---
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     OUTPUT_RECLASSIFIED_TIF = os.path.join(OUTPUT_DIR, 'reclassified_land_use.tif')
     OUTPUT_MANURE_APPLICATION_TIF = os.path.join(OUTPUT_DIR, 'swine_manure_application_map.tif')
 
-    # --- 3. 定义土地利用分类逻辑 ---
+    # --- 3. Define land use classification logic ---
     classification_logic = {212: 1, 213: 1, 221: 1, 222: 1, 223: 1, 241: 1, 242: 1, 243: 1, 244: 1, 231: 2}
 
-    # --- 4. 执行工作流 ---
+    # --- 4. Execute workflow ---
     manure_fractions = load_manure_fractions_from_excel(FRACTION_EXCEL_PATH)
     reclassified_path = reclassify_land_use(INPUT_CORINE_TIF, classification_logic, OUTPUT_RECLASSIFIED_TIF)
     calculate_manure_application(
@@ -2187,8 +2187,8 @@ if __name__ == '__main__':
         output_path=OUTPUT_MANURE_APPLICATION_TIF
     )
 
-    print("\n--- ✅ 所有处理已完成！ ---")
-    print(f"最终的猪粪施用地图已保存至: {OUTPUT_MANURE_APPLICATION_TIF}")
+    print("\n--- ✅ All processing complete! ---")
+    print(f"Final swine manure application map saved to: {OUTPUT_MANURE_APPLICATION_TIF}")
 
 
 
